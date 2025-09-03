@@ -1,4 +1,4 @@
-// Server for OX Game - For Render Deployment
+// FINAL SERVER CODE - With Move Broadcasting Fix
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -6,12 +6,9 @@ const { Server } = require("socket.io");
 const app = express();
 const server = http.createServer(app);
 
-// CORS Configuration: This is very important!
 const io = new Server(server, {
   cors: {
-    // We will put your Netlify URL here later.
-    // For now, you can put a placeholder.
-    origin: "https://vaibhavoxgame.netlify.app", 
+    origin: "https://vaibhavoxgame.netlify.app", // Your Netlify URL
     methods: ["GET", "POST"]
   }
 });
@@ -22,9 +19,40 @@ app.get("/", (req, res) => {
 });
 
 let rooms = {};
+let timers = {}; // To store timers for each room
 
 const findRoomBySocketId = (socketId) => {
     return Object.keys(rooms).find(roomCode => rooms[roomCode]?.players.some(p => p.id === socketId));
+};
+
+const startTurnTimer = (roomCode) => {
+    if (timers[roomCode]) {
+        clearInterval(timers[roomCode]);
+    }
+
+    let seconds = 30;
+    const room = rooms[roomCode];
+    if (!room) return;
+    
+    io.to(roomCode).emit('timerTick', seconds); // Send initial time
+
+    timers[roomCode] = setInterval(() => {
+        seconds--;
+        io.to(roomCode).emit('timerTick', seconds);
+
+        if (seconds <= 0) {
+            clearInterval(timers[roomCode]);
+            room.currentPlayerMarker = room.currentPlayerMarker === 'X' ? 'O' : 'X';
+            io.to(roomCode).emit('turnSkipped', room.currentPlayerMarker);
+            startTurnTimer(roomCode); // Restart timer for the next player
+        }
+    }, 1000);
+};
+
+const stopTurnTimer = (roomCode) => {
+    if (timers[roomCode]) {
+        clearInterval(timers[roomCode]);
+    }
 };
 
 io.on('connection', (socket) => {
@@ -38,7 +66,8 @@ io.on('connection', (socket) => {
 
         rooms[roomCode] = {
             players: [{ id: socket.id, name: playerName, marker: 'X' }],
-            board: Array(9).fill(null)
+            board: Array(9).fill(null),
+            currentPlayerMarker: 'X'
         };
         socket.join(roomCode);
         socket.emit('roomCreated', { roomCode, playerMarker: 'X' });
@@ -54,6 +83,7 @@ io.on('connection', (socket) => {
                 playerX: room.players[0].name,
                 playerO: room.players[1].name
             });
+            startTurnTimer(roomCode);
             console.log(`${playerName} joined room ${roomCode}`);
         } else {
             socket.emit('error', 'Room is full or does not exist.');
@@ -62,17 +92,28 @@ io.on('connection', (socket) => {
 
     socket.on('makeMove', ({ roomCode, index, playerMarker }) => {
         const room = rooms[roomCode];
-        if (!room) return;
+        if (!room || room.board[index] !== null || playerMarker !== room.currentPlayerMarker) return;
+        
+        stopTurnTimer(roomCode); // Stop timer on successful move
+        
         room.board[index] = playerMarker;
-        socket.to(roomCode).emit('moveMade', { index, playerMarker });
+        room.currentPlayerMarker = playerMarker === 'X' ? 'O' : 'X';
+
+        // *** THIS IS THE FIX ***
+        // Changed socket.to(...) to io.to(...) to send the move to EVERYONE in the room.
+        io.to(roomCode).emit('moveMade', { index, playerMarker, nextTurn: room.currentPlayerMarker });
+        
+        startTurnTimer(roomCode); // Start timer for the next player
     });
 
     socket.on('disconnect', () => {
         console.log(`Player disconnected: ${socket.id}`);
         const roomCode = findRoomBySocketId(socket.id);
         if (roomCode) {
+            stopTurnTimer(roomCode);
             socket.to(roomCode).emit('opponentLeft');
             delete rooms[roomCode];
+            delete timers[roomCode];
             console.log(`Room ${roomCode} was closed.`);
         }
     });
@@ -81,6 +122,4 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
-
 });
-
