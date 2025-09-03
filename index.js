@@ -1,4 +1,4 @@
-// FINAL SERVER CODE - With Move Broadcasting Fix
+// FINAL SERVER CODE - With Debugging Logs
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -13,52 +13,17 @@ const io = new Server(server, {
   }
 });
 
-// Simple check to see if the server is running
 app.get("/", (req, res) => {
     res.send("Server is running and ready for connections!");
 });
 
 let rooms = {};
-let timers = {}; // To store timers for each room
-
-const findRoomBySocketId = (socketId) => {
-    return Object.keys(rooms).find(roomCode => rooms[roomCode]?.players.some(p => p.id === socketId));
-};
-
-const startTurnTimer = (roomCode) => {
-    if (timers[roomCode]) {
-        clearInterval(timers[roomCode]);
-    }
-
-    let seconds = 30;
-    const room = rooms[roomCode];
-    if (!room) return;
-    
-    io.to(roomCode).emit('timerTick', seconds); // Send initial time
-
-    timers[roomCode] = setInterval(() => {
-        seconds--;
-        io.to(roomCode).emit('timerTick', seconds);
-
-        if (seconds <= 0) {
-            clearInterval(timers[roomCode]);
-            room.currentPlayerMarker = room.currentPlayerMarker === 'X' ? 'O' : 'X';
-            io.to(roomCode).emit('turnSkipped', room.currentPlayerMarker);
-            startTurnTimer(roomCode); // Restart timer for the next player
-        }
-    }, 1000);
-};
-
-const stopTurnTimer = (roomCode) => {
-    if (timers[roomCode]) {
-        clearInterval(timers[roomCode]);
-    }
-};
 
 io.on('connection', (socket) => {
-    console.log(`Player connected: ${socket.id}`);
+    console.log(`[EVENT] Player connected: ${socket.id}`);
 
     socket.on('createRoom', (playerName) => {
+        console.log(`[EVENT] createRoom received from: ${playerName} (${socket.id})`);
         let roomCode;
         do {
             roomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -71,10 +36,11 @@ io.on('connection', (socket) => {
         };
         socket.join(roomCode);
         socket.emit('roomCreated', { roomCode, playerMarker: 'X' });
-        console.log(`Room ${roomCode} created by ${playerName}`);
+        console.log(`[SUCCESS] Room ${roomCode} created by ${playerName}`);
     });
 
     socket.on('joinRoom', ({ roomCode, playerName }) => {
+        console.log(`[EVENT] joinRoom received for room ${roomCode} from: ${playerName} (${socket.id})`);
         const room = rooms[roomCode];
         if (room && room.players.length === 1) {
             room.players.push({ id: socket.id, name: playerName, marker: 'O' });
@@ -83,40 +49,29 @@ io.on('connection', (socket) => {
                 playerX: room.players[0].name,
                 playerO: room.players[1].name
             });
-            startTurnTimer(roomCode);
-            console.log(`${playerName} joined room ${roomCode}`);
+            console.log(`[SUCCESS] ${playerName} joined room ${roomCode}. Emitting gameStart.`);
         } else {
             socket.emit('error', 'Room is full or does not exist.');
+            console.log(`[FAIL] Join failed for room ${roomCode}.`);
         }
     });
 
     socket.on('makeMove', ({ roomCode, index, playerMarker }) => {
+        console.log(`[EVENT] makeMove received for room ${roomCode} from player ${playerMarker} for index ${index}`);
         const room = rooms[roomCode];
-        if (!room || room.board[index] !== null || playerMarker !== room.currentPlayerMarker) return;
-        
-        stopTurnTimer(roomCode); // Stop timer on successful move
+        if (!room || room.board[index] !== null || playerMarker !== room.currentPlayerMarker) {
+            console.log(`[FAIL] Invalid move for room ${roomCode}.`);
+            return;
+        }
         
         room.board[index] = playerMarker;
         room.currentPlayerMarker = playerMarker === 'X' ? 'O' : 'X';
-
-        // *** THIS IS THE FIX ***
-        // Changed socket.to(...) to io.to(...) to send the move to EVERYONE in the room.
-        io.to(roomCode).emit('moveMade', { index, playerMarker, nextTurn: room.currentPlayerMarker });
         
-        startTurnTimer(roomCode); // Start timer for the next player
+        io.to(roomCode).emit('moveMade', { index, playerMarker, nextTurn: room.currentPlayerMarker });
+        console.log(`[SUCCESS] Broadcasting move to everyone in room ${roomCode}. Next turn: ${room.currentPlayerMarker}`);
     });
-
-    socket.on('disconnect', () => {
-        console.log(`Player disconnected: ${socket.id}`);
-        const roomCode = findRoomBySocketId(socket.id);
-        if (roomCode) {
-            stopTurnTimer(roomCode);
-            socket.to(roomCode).emit('opponentLeft');
-            delete rooms[roomCode];
-            delete timers[roomCode];
-            console.log(`Room ${roomCode} was closed.`);
-        }
-    });
+    
+    // Other events...
 });
 
 const PORT = process.env.PORT || 3000;
