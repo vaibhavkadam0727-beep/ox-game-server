@@ -11,7 +11,7 @@ const io = new Server(server, {
   cors: {
     // We will put your Netlify URL here later.
     // For now, you can put a placeholder.
-    origin: "https://vaibhavoxgame.netlify.app/", 
+    origin: "https://vaibhavoxgame.netlify.app", 
     methods: ["GET", "POST"]
   }
 });
@@ -83,3 +83,4 @@ server.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 
 });
+
